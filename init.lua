@@ -69,7 +69,7 @@ vim.opt.modifiable = true -- allow buffer modifications
 vim.opt.encoding = "utf-8" -- set encoding
 
 vim.opt.guicursor =
-	"n-v-c:block,i-ci-ve:block,r-cr:hor20,o:hor50,a:blinkwait700-blinkoff400-blinkon250-Cursor/lCursor,sm:block-blinkwait175-blinkoff150-blinkon175" -- cursor blinking and settings
+	"n-v-c:block,i-ci-ve:ver25,r-cr:hor20,o:hor50,a:blinkwait700-blinkoff400-blinkon250-Cursor/lCursor,sm:block-blinkwait175-blinkoff150-blinkon175" -- cursor blinking and settings
 
 -- Folding: requires treesitter available at runtime; safe fallback if not
 vim.opt.foldmethod = "expr" -- use expression for folding
@@ -90,13 +90,15 @@ vim.opt.maxmempattern = 20000 -- increase max memory
 -- ============================================================================
 local augroup = vim.api.nvim_create_augroup("UserConfig", { clear = true })
 
--- Format on save (ONLY real file buffers, ONLY when efm is attached)
+-- Format on save (ONLY real file buffers, ONLY when the formatter is attached)
+-- Rust formats through rust-analyzer (rustfmt), everything else through efm
 vim.api.nvim_create_autocmd("BufWritePre", {
 	group = augroup,
 	pattern = {
 		"*.lua",
 		"*.py",
 		"*.go",
+		"*.rs",
 		"*.js",
 		"*.jsx",
 		"*.ts",
@@ -124,23 +126,15 @@ vim.api.nvim_create_autocmd("BufWritePre", {
 			return
 		end
 
-		local has_efm = false
-		for _, c in ipairs(vim.lsp.get_clients({ bufnr = args.buf })) do
-			if c.name == "efm" then
-				has_efm = true
-				break
-			end
-		end
-		if not has_efm then
+		local formatter = vim.bo[args.buf].filetype == "rust" and "rust_analyzer" or "efm"
+		if #vim.lsp.get_clients({ bufnr = args.buf, name = formatter }) == 0 then
 			return
 		end
 
 		pcall(vim.lsp.buf.format, {
 			bufnr = args.buf,
 			timeout_ms = 2000,
-			filter = function(c)
-				return c.name == "efm"
-			end,
+			name = formatter,
 		})
 	end,
 })
@@ -185,6 +179,17 @@ vim.api.nvim_create_autocmd("FileType", {
 	end,
 })
 
+-- 4-space indentation for C and C++
+vim.api.nvim_create_autocmd("FileType", {
+	group = augroup,
+	pattern = { "c", "cpp" },
+	callback = function()
+		vim.opt_local.tabstop = 4
+		vim.opt_local.shiftwidth = 4
+		vim.opt_local.softtabstop = 4
+	end,
+})
+
 -- ============================================================================
 -- PLUGINS
 -- ============================================================================
@@ -210,6 +215,17 @@ vim.pack.add({
 		version = vim.version.range("1.*"),
 	},
 	"https://github.com/L3MON4D3/LuaSnip",
+	-- Debugging
+	"https://github.com/mfussenegger/nvim-dap",
+	"https://github.com/nvim-neotest/nvim-nio",
+	"https://github.com/rcarriga/nvim-dap-ui",
+	-- AI and code review
+	"https://github.com/nickjvandyke/opencode.nvim",
+	"https://github.com/MunifTanjim/nui.nvim",
+	"https://github.com/esmuellert/codediff.nvim",
+	"https://github.com/georgeguimaraes/review.nvim",
+	-- Git
+	"https://github.com/NeogitOrg/neogit",
 })
 
 local function packadd(name)
@@ -227,6 +243,17 @@ packadd("mason-lspconfig.nvim")
 packadd("efmls-configs-nvim")
 packadd("blink.cmp")
 packadd("LuaSnip")
+-- Debugging
+packadd("nvim-dap")
+packadd("nvim-nio")
+packadd("nvim-dap-ui")
+-- AI and code review
+packadd("opencode.nvim")
+packadd("nui.nvim")
+packadd("codediff.nvim")
+packadd("review.nvim")
+-- Git
+packadd("neogit")
 
 -- ============================================================================
 -- STATUSLINE (lualine)
@@ -304,6 +331,7 @@ local setup_treesitter = function()
 		"vue",
 		"svelte",
 		"bash",
+		"toml",
 	}
 
 	local config = require("nvim-treesitter.config")
@@ -410,9 +438,9 @@ require("gitsigns").setup({
 
 require("mason").setup({})
 require("mason-lspconfig").setup({
-	ensure_installed = { "lua_ls", "pyright", "bashls", "ts_ls", "clangd" },
+	ensure_installed = { "lua_ls", "pyright", "bashls", "ts_ls", "clangd", "taplo" },
 	automatic_installation = true,
-	automatic_enable = { "lua_ls", "pyright", "bashls", "ts_ls", "clangd" },
+	automatic_enable = { "lua_ls", "pyright", "bashls", "ts_ls", "clangd", "taplo" },
 })
 
 vim.keymap.set("n", "]h", function()
@@ -513,6 +541,15 @@ local function lsp_on_attach(ev)
 	end, opts)
 	vim.keymap.set("n", "K", vim.lsp.buf.hover, opts)
 
+	if client:supports_method("textDocument/inlayHint", bufnr) then
+		if client.name == "rust_analyzer" then
+			vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+		end
+		vim.keymap.set("n", "<leader>ih", function()
+			vim.lsp.inlay_hint.enable(not vim.lsp.inlay_hint.is_enabled({ bufnr = bufnr }), { bufnr = bufnr })
+		end, opts)
+	end
+
 	vim.keymap.set("n", "<leader>fd", function()
 		require("fzf-lua").lsp_definitions({ jump_to_single_result = true })
 	end, opts)
@@ -595,6 +632,16 @@ vim.lsp.config("bashls", {})
 vim.lsp.config("ts_ls", {})
 vim.lsp.config("gopls", {})
 vim.lsp.config("clangd", {})
+-- rust-analyzer comes from rustup (`rustup component add rust-analyzer`), not mason
+vim.lsp.config("rust_analyzer", {
+	settings = {
+		["rust-analyzer"] = {
+			cargo = { allFeatures = true },
+			check = { command = "clippy" },
+		},
+	},
+})
+vim.lsp.config("taplo", {}) -- TOML, including Cargo.toml schema validation
 
 do
 	local luacheck = require("efmls-configs.linters.luacheck")
@@ -665,6 +712,186 @@ vim.lsp.enable({
 	"ts_ls",
 	"gopls",
 	"clangd",
+	"rust_analyzer",
+	"taplo",
 	"efm",
 })
+
+-- ============================================================================
+-- DEBUGGING (nvim-dap + codelldb)
+-- ============================================================================
+local dap = require("dap")
+local dapui = require("dapui")
+
+-- codelldb is a mason package but not an LSP, so mason-lspconfig will not install it
+do
+	local registry = require("mason-registry")
+	registry.refresh(function()
+		local ok, pkg = pcall(registry.get_package, "codelldb")
+		if ok and not pkg:is_installed() then
+			pkg:install()
+		end
+	end)
+end
+
+dapui.setup({})
+dap.listeners.before.attach.dapui_config = function()
+	dapui.open()
+end
+dap.listeners.before.launch.dapui_config = function()
+	dapui.open()
+end
+dap.listeners.before.event_terminated.dapui_config = function()
+	dapui.close()
+end
+dap.listeners.before.event_exited.dapui_config = function()
+	dapui.close()
+end
+
+vim.fn.sign_define("DapBreakpoint", { text = "●", texthl = "DiagnosticError" })
+vim.fn.sign_define("DapBreakpointCondition", { text = "◆", texthl = "DiagnosticError" })
+vim.fn.sign_define("DapStopped", { text = "▶", texthl = "DiagnosticOk", linehl = "Visual" })
+
+dap.adapters.codelldb = {
+	type = "executable",
+	command = "codelldb",
+}
+
+local function crate_root()
+	return vim.fs.root(0, "Cargo.toml") or vim.fn.getcwd()
+end
+
+-- Build with cargo, then hand nvim-dap the executable it produced
+local function cargo_program(cargo_args, tests_only)
+	return function()
+		local root = crate_root()
+		local cmd = vim.list_extend({ "cargo" }, cargo_args)
+		table.insert(cmd, "--message-format=json")
+
+		return coroutine.create(function(dap_run_co)
+			vim.notify("Running `" .. table.concat(cmd, " ") .. "`...")
+			vim.system(
+				cmd,
+				{ cwd = root, text = true },
+				vim.schedule_wrap(function(res)
+					if res.code ~= 0 then
+						vim.notify("cargo failed:\n" .. res.stderr, vim.log.levels.ERROR)
+						coroutine.resume(dap_run_co, dap.ABORT)
+						return
+					end
+
+					local executables = {}
+					for line in vim.gsplit(res.stdout, "\n", { trimempty = true }) do
+						local ok, msg = pcall(vim.json.decode, line)
+						if
+							ok
+							and msg.reason == "compiler-artifact"
+							and type(msg.executable) == "string"
+							and (not tests_only or msg.profile.test)
+						then
+							table.insert(executables, msg.executable)
+						end
+					end
+
+					if #executables == 0 then
+						vim.notify("cargo produced no executable to debug", vim.log.levels.ERROR)
+						coroutine.resume(dap_run_co, dap.ABORT)
+					elseif #executables == 1 then
+						coroutine.resume(dap_run_co, executables[1])
+					else
+						vim.ui.select(executables, { prompt = "Executable to debug" }, function(choice)
+							coroutine.resume(dap_run_co, choice or dap.ABORT)
+						end)
+					end
+				end)
+			)
+		end)
+	end
+end
+
+dap.configurations.rust = {
+	{
+		name = "Debug binary (cargo build)",
+		type = "codelldb",
+		request = "launch",
+		program = cargo_program({ "build" }),
+		cwd = crate_root,
+		stopOnEntry = false,
+		sourceLanguages = { "rust" },
+	},
+	{
+		name = "Debug tests (cargo test --no-run)",
+		type = "codelldb",
+		request = "launch",
+		program = cargo_program({ "test", "--no-run" }, true),
+		cwd = crate_root,
+		stopOnEntry = false,
+		sourceLanguages = { "rust" },
+	},
+}
+
+vim.keymap.set("n", "<F5>", dap.continue, { desc = "Debug: start/continue" })
+vim.keymap.set("n", "<F10>", dap.step_over, { desc = "Debug: step over" })
+vim.keymap.set("n", "<F11>", dap.step_into, { desc = "Debug: step into" })
+vim.keymap.set("n", "<F12>", dap.step_out, { desc = "Debug: step out" })
+vim.keymap.set("n", "<leader>dc", dap.continue, { desc = "Debug: start/continue" })
+vim.keymap.set("n", "<leader>do", dap.step_over, { desc = "Debug: step over" })
+vim.keymap.set("n", "<leader>di", dap.step_into, { desc = "Debug: step into" })
+vim.keymap.set("n", "<leader>dO", dap.step_out, { desc = "Debug: step out" })
+vim.keymap.set("n", "<leader>db", dap.toggle_breakpoint, { desc = "Debug: toggle breakpoint" })
+vim.keymap.set("n", "<leader>dB", function()
+	dap.set_breakpoint(vim.fn.input("Breakpoint condition: "))
+end, { desc = "Debug: conditional breakpoint" })
+vim.keymap.set("n", "<leader>dt", dap.terminate, { desc = "Debug: terminate" })
+vim.keymap.set("n", "<leader>du", dapui.toggle, { desc = "Debug: toggle UI" })
+vim.keymap.set({ "n", "v" }, "<leader>de", dapui.eval, { desc = "Debug: evaluate expression" })
+
+-- ============================================================================
+-- AI (opencode TUI in a tmux pane) AND CODE REVIEW
+-- ============================================================================
+-- The TUI in the tmux pane owns the session, so never open one inside Neovim
+vim.g.opencode_opts = {
+	server = { start = false },
+}
+
+vim.keymap.set({ "n", "x" }, "<leader>a", function()
+	require("agent_draft").leader_a()
+end, { desc = "AI: add to the draft, open it, or send it" })
+
+vim.api.nvim_create_autocmd("User", {
+	group = augroup,
+	pattern = { "OpencodeEvent:session.execution.succeeded", "OpencodeEvent:session.execution.failed" },
+	callback = function(args)
+		require("agent_review").on_agent_idle(args.data.event.data.sessionID)
+	end,
+})
+
+require("codediff").setup({})
+
+-- Comments only reach the agent through <leader>vs, which also adds your edits
+require("review").setup({
+	export = { clipboard = false, clear_on_close = false },
+})
+
+vim.keymap.set("n", "<leader>vv", function()
+	require("agent_review").open("Review")
+end, { desc = "Review: working tree" })
+vim.keymap.set("n", "<leader>vb", function()
+	require("agent_review").open("Review branch")
+end, { desc = "Review: branch against base" })
+vim.keymap.set("n", "<leader>vs", function()
+	require("agent_review").send()
+end, { desc = "Review: send comments and your edits to the agent" })
+vim.keymap.set("n", "<leader>vr", function()
+	require("agent_review").reset()
+end, { desc = "Review: treat the current code as the agent's, not your edits" })
+vim.keymap.set("n", "<leader>vc", "<cmd>Review close<CR>", { desc = "Review: close" })
+vim.keymap.set("n", "<leader>vl", "<cmd>Review list<CR>", { desc = "Review: list comments" })
+
+-- ============================================================================
+-- GIT (neogit)
+-- ============================================================================
+require("neogit").setup({ diff_viewer = "codediff" })
+
+vim.keymap.set("n", "<leader>gg", "<cmd>Neogit<CR>", { desc = "Open Neogit" })
 
